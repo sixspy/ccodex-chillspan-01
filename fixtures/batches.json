@@ -12,7 +12,7 @@
   {
     "batch_code": "TB-CK-HB-02-001",
     "chamber_code": "CK-HB-02",
-    "probe_code": "PR-HB-B1",
+    "probe_code": "PR-HB-B3",
     "cargo_ref": "海鲜冷链 B-12",
     "status": "已入库",
     "temp_points": [{"t": "06:00", "c": -21.5}, {"t": "07:00", "c": -15.0}, {"t": "08:00", "c": -20.1}],

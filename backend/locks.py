@@ -1,6 +1,8 @@
 """仓间锁与争用登记（公共并发面）。"""
 from __future__ import annotations
 
+import sqlite3
+
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
@@ -15,24 +17,36 @@ class LockIn(BaseModel):
     action: str = "acquire"
 
 
+def _log_contention(conn, lock_key: str, actor: str, holder: str) -> None:
+    conn.execute(
+        """INSERT INTO contention_log(lock_key,actor,action,detail,created_at)
+           VALUES (?,?,?,?,?)""",
+        (lock_key, actor, "争用", f"持有者={holder}", now_iso()),
+    )
+
+
 def try_acquire(conn, lock_key: str, holder: str) -> bool:
     now = now_iso()
     row = conn.execute(
         "SELECT holder FROM chamber_locks WHERE lock_key=?", (lock_key,)
     ).fetchone()
     if row is None:
-        conn.execute(
-            "INSERT INTO chamber_locks(lock_key,holder,acquired_at) VALUES (?,?,?)",
-            (lock_key, holder, now),
-        )
+        try:
+            conn.execute(
+                "INSERT INTO chamber_locks(lock_key,holder,acquired_at) VALUES (?,?,?)",
+                (lock_key, holder, now),
+            )
+        except sqlite3.IntegrityError:
+            # 并发同键抢插：后到按争用处理，只留痕
+            winner = conn.execute(
+                "SELECT holder FROM chamber_locks WHERE lock_key=?", (lock_key,)
+            ).fetchone()
+            _log_contention(conn, lock_key, holder, winner["holder"] if winner else "?")
+            return False
         return True
     if row["holder"] == holder:
         return True
-    conn.execute(
-        """INSERT INTO contention_log(lock_key,actor,action,detail,created_at)
-           VALUES (?,?,?,?,?)""",
-        (lock_key, holder, "争用", f"持有者={row['holder']}", now),
-    )
+    _log_contention(conn, lock_key, holder, row["holder"])
     return False
 
 
@@ -46,6 +60,24 @@ def release(conn, lock_key: str, holder: str) -> None:
 def require_lock(conn, lock_key: str, holder: str) -> None:
     if not try_acquire(conn, lock_key, holder):
         raise HTTPException(409, "争用：后到只记争用，不写业务")
+
+
+def acquire_lock_committed(lock_key: str, holder: str) -> bool:
+    """独立连接占锁并立即提交：锁行对其它会话立即可见，先到先得。
+
+    争用验收段专用（如探头锁 probe:{id}）；后到只留争用痕，不写业务。
+    """
+    with connect() as conn:
+        ok = try_acquire(conn, lock_key, holder)
+        conn.commit()
+        return ok
+
+
+def release_lock_committed(lock_key: str, holder: str) -> None:
+    """独立连接放锁并立即提交，与 acquire_lock_committed 配对。"""
+    with connect() as conn:
+        release(conn, lock_key, holder)
+        conn.commit()
 
 
 @router.get("/api/locks")

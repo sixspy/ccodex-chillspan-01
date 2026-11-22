@@ -12,9 +12,19 @@ router = APIRouter(tags=["reconcile"])
 def _chamber_recon(conn, chamber) -> dict:
     cid = chamber["id"]
     quota = int(chamber["quota_batches"])
+    # 在批只计探头校准未过期的正式批；过期正式批单列污染，不得计入绿灯
     active = conn.execute(
-        """SELECT COUNT(*) c FROM temp_batches
-           WHERE chamber_id=? AND status NOT IN ('已封批','作废')""",
+        """SELECT COUNT(*) c FROM temp_batches b
+           JOIN probes p ON p.id=b.probe_id
+           WHERE b.chamber_id=? AND b.status NOT IN ('已封批','作废')
+             AND p.calibration_due >= date('now')""",
+        (cid,),
+    ).fetchone()["c"]
+    expired_official = conn.execute(
+        """SELECT COUNT(*) c FROM temp_batches b
+           JOIN probes p ON p.id=b.probe_id
+           WHERE b.chamber_id=? AND b.status NOT IN ('已封批','作废')
+             AND p.calibration_due < date('now')""",
         (cid,),
     ).fetchone()["c"]
     sealed = conn.execute(
@@ -23,20 +33,22 @@ def _chamber_recon(conn, chamber) -> dict:
         (cid,),
     ).fetchone()["c"]
     gap = quota - active
-    ok = active <= quota
+    ok = active <= quota and expired_official == 0
     return {
         "chamber_id": cid,
         "chamber_code": chamber["chamber_code"],
         "region": chamber["region"],
         "quota_batches": quota,
         "active_batches": active,
+        "expired_official_batches": expired_official,
         "sealed_batches": sealed,
         "quota_left": gap,
         "balanced": ok,
         "proof": {
-            "formula": "active_batches <= quota_batches",
+            "formula": "active_batches <= quota_batches and expired_official_batches == 0",
             "left": active,
             "right": quota,
+            "expired_official_batches": expired_official,
         },
     }
 

@@ -16,14 +16,21 @@ def validate_probe_online(row) -> None:
         raise HTTPException(409, "探头离线，禁止写批次")
 
 
-def validate_calibration_not_overdue(row) -> None:
-    """到期仅警告级：入库允许但封批会拦截。"""
+def calibration_expired(row) -> bool:
+    """探头校准是否已过期（服务端唯一判定源，五页同源）。"""
     from datetime import date
 
     due = row["calibration_due"]
-    if due and due < date.today().isoformat():
-        # 允许继续，由 seal 阶段硬拦
-        return
+    return bool(due) and due < date.today().isoformat()
+
+
+def require_calibration_intake(row) -> None:
+    """甲路径入批门闸：校准过期探头禁止入批，正式表零增（2026-11-22 封死）。
+
+    见 docs/expired-intake-gate.md；乙路径（影子待检批次）永不启用。
+    """
+    if calibration_expired(row):
+        raise HTTPException(409, "探头校准已过期，禁止入批（甲路径：正式表零增）")
 
 
 def require_calibration_fresh(row) -> None:

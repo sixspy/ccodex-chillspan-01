@@ -14,19 +14,22 @@ router = APIRouter(tags=["calibration"])
 def list_calibrations(authorization: AuthHeader = None, probe_id: int | None = None):
     require_user(authorization)
     with connect() as conn:
+        base = """SELECT c.*, p.probe_code,
+                     (p.calibration_due < date('now')) AS probe_calibration_expired
+              FROM calibration_records c
+              JOIN probes p ON p.id=c.probe_id"""
         if probe_id:
             rows = conn.execute(
-                """SELECT c.*, p.probe_code FROM calibration_records c
-                   JOIN probes p ON p.id=c.probe_id
-                   WHERE c.probe_id=? ORDER BY c.id DESC""",
-                (probe_id,),
+                base + " WHERE c.probe_id=? ORDER BY c.id DESC", (probe_id,)
             ).fetchall()
         else:
-            rows = conn.execute(
-                """SELECT c.*, p.probe_code FROM calibration_records c
-                   JOIN probes p ON p.id=c.probe_id ORDER BY c.id DESC"""
-            ).fetchall()
-        return {"items": [dict(r) for r in rows]}
+            rows = conn.execute(base + " ORDER BY c.id DESC").fetchall()
+        items = []
+        for r in rows:
+            d = dict(r)
+            d["probe_calibration_expired"] = bool(d["probe_calibration_expired"])
+            items.append(d)
+        return {"items": items}
 
 
 @router.post("/api/calibrations")
